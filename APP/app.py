@@ -520,7 +520,7 @@ def load_generated_curves():
  
 with st.sidebar:
     st.markdown("## ⚡ Data & Energie")
-    st.markdown("*GMM S4 — Ecole des Ponts ParisTech*")
+    st.markdown("* Ecole des Ponts*")
     st.divider()
     page = st.radio(
         "Navigation",
