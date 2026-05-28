@@ -46,11 +46,14 @@ LABELS_PATH = BASE_DIR / "Data" / "RES2-6-9-labels.csv"
 
 OUTPUTS_DIR = BASE_DIR / "outputs"
 FIGURES_DIR = OUTPUTS_DIR / "figures"
+Results_DIR = OUTPUTS_DIR / "results"
+
+
 
 FIG_CLUSTERING_DIR = FIGURES_DIR / "clustering"
 FIG_CLASSIFICATION_DIR = FIGURES_DIR / "classification"
 FIG_PREDICTION_DIR = FIGURES_DIR / "prediction"
-FIG_GENERATION_DIR = FIGURES_DIR / "generation"
+GENERATION_CSV_PATH = Results_DIR/ "courbes_generees_cvae.csv"
 
 COL_PDL = "pdl_id"
 COL_DT  = "horodate"
@@ -479,7 +482,39 @@ def train_forecast_models(_df_feat, _feature_cols, _target_cols):
         }
     return results
 
+@st.cache_data(show_spinner="Chargement des courbes générées CVAE...")
+def load_generated_curves():
+    if not GENERATION_CSV_PATH.exists():
+        return None
 
+    gen = pd.read_csv(GENERATION_CSV_PATH)
+
+    required_cols = {
+        "sample_id", "label", "season",
+        "hh_index", "time_h",
+        "puissance_w", "energy_kwh_step"
+    }
+
+    if not required_cols.issubset(set(gen.columns)):
+        st.error(
+            "Le fichier courbes_generees_cvae.csv ne contient pas les colonnes attendues."
+        )
+        return None
+
+    gen["sample_id"] = gen["sample_id"].astype(str)
+    gen["label"] = gen["label"].astype(str)
+    gen["season"] = gen["season"].astype(str)
+
+    gen["hh_index"] = pd.to_numeric(gen["hh_index"], errors="coerce")
+    gen["time_h"] = pd.to_numeric(gen["time_h"], errors="coerce")
+    gen["puissance_w"] = pd.to_numeric(gen["puissance_w"], errors="coerce")
+    gen["energy_kwh_step"] = pd.to_numeric(gen["energy_kwh_step"], errors="coerce")
+
+    gen = gen.dropna(
+        subset=["hh_index", "time_h", "puissance_w", "energy_kwh_step"]
+    )
+
+    return gen
 
 # Sidebar
  
@@ -1425,7 +1460,6 @@ elif page == "📈 Que va-t-il consommer ?":
         prediction_figs = {
             "Prédictions vs réel": FIG_PREDICTION_DIR / "fig_07_predictions.png",
             "MAE par heure": FIG_PREDICTION_DIR / "fig_08_mae_by_hour.png",
-            "Loss LSTM": FIG_PREDICTION_DIR / "fig_09_lstm_loss.png",
         }
 
         existing_prediction_figs = {
@@ -1475,89 +1509,212 @@ elif page == "📈 Que va-t-il consommer ?":
         )
 
 # PAGE 6 : GENERATION
-elif page == "\U0001f3a8 Generer de nouveaux profils":
-    st.title("\U0001f3a8 Etape 3 — Generer des courbes de consommation synthetiques")
+elif page == "🎨 Generer de nouveaux profils":
+    st.title("🎨 Etape 3 — Générer des courbes de consommation synthétiques")
 
     st.markdown(
         '''<div class="story-box">
-        La prevision nous dit <i>combien</i> un client consommera demain.
-        Mais pour planifier le reseau a long terme — ou tester des scenarios futurs
-        (plus de résidences principales dans une zone, nouveaux lotissements...) — on a besoin de
-        <b>generer des courbes completes</b> a pas de 30 minutes, realistes et variees.<br><br>
-        Un <b>CVAE (Conditional Variational Autoencoder)</b> apprend la forme des
-        courbes reelles et peut en creer de nouvelles a volonte, conditionnees au
-        type de client (RS ou RP).
-        </div>''', unsafe_allow_html=True)
+        La prévision nous dit <i>combien</i> un client consommera demain.
+        Mais pour planifier le réseau à long terme — ou tester des scénarios futurs —
+        on a besoin de <b>générer des courbes complètes</b> à pas de 30 minutes,
+        réalistes et variées.<br><br>
+        Un <b>CVAE</b> apprend la forme des courbes réelles et génère de nouvelles
+        courbes synthétiques, conditionnées par le type de client et la saison.
+        </div>''',
+        unsafe_allow_html=True
+    )
 
-    col_why1, col_why2 = st.columns(2)
-    with col_why1:
-        st.markdown(
-            '''<div class="why-box">
-            <strong>Cas d'usage 1 : simulation de scenarios</strong><br>
-            Et si la proportion de résidences principales dans une zone augmentait de 30% ?
-            Le CVAE peut generer des milliers de profils RP synthetiques
-            pour estimer l'impact sur le reseau local.
-            </div>''', unsafe_allow_html=True)
-    with col_why2:
-        st.markdown(
-            '''<div class="why-box">
-            <strong>Cas d'usage 2 : augmentation de donnees</strong><br>
-            Des courbes synthetiques statistiquement realistes permettent
-            d'entrainer d'autres modeles de ML sans exposer les donnees
-            des vrais clients (respect de la vie privee).
-            </div>''', unsafe_allow_html=True)
+    gen_df = load_generated_curves()
 
-    st.divider()
-    col_arch, col_eval = st.columns(2)
-    with col_arch:
-        st.markdown("#### Architecture du CVAE")
-        arch_df = pd.DataFrame({
-            "Parametre": ["Entree (PROFILE_DIM)", "Condition (COND_DIM)",
-                          "Espace latent (LATENT_DIM)", "Epochs", "Optimiseur"],
-            "Valeur": ["48 (une valeur par 30 min)", "2 (RS ou RP, one-hot)",
-                       "16 dimensions", "120", "Adam (lr=1e-3)"],
-        })
-        st.dataframe(arch_df, use_container_width=True, hide_index=True)
-        st.caption(
-            "Le CVAE compresse chaque courbe de 48 points en 16 dimensions latentes. "
-            "La condition RS/RP guide la generation vers le bon type de profil."
+    if gen_df is None:
+        st.error(
+            f"Fichier CSV introuvable ou invalide : {GENERATION_CSV_PATH}"
         )
-    with col_eval:
-        st.markdown("#### Comment evaluer les courbes generees ?")
-        st.markdown(
-            "- **Test KS** (`ks_2samp`) : verifie que la distribution des courbes "
-            "generees est proche de celle des courbes reelles\n"
-            "- **Erreur de reconstruction** : fidelite de l'autoencodeur\n"
-            "- **PCA de l'espace latent** : verifie la separation RS/RP interne"
+        st.stop()
+
+    tab_curves, tab_stats, tab_data, tab_limits = st.tabs(
+        [
+            "📈 Courbes générées",
+            "📊 Analyse statistique",
+            "📋 Données CSV",
+            "⚠️ Limites"
+        ]
+    )
+
+    with tab_curves:
+        st.subheader("Visualisation des courbes synthétiques générées")
+
+        c1, c2, c3 = st.columns(3)
+
+        with c1:
+            label_choice = st.selectbox(
+                "Type de client",
+                sorted(gen_df["label"].unique())
+            )
+
+        with c2:
+            season_choice = st.selectbox(
+                "Saison",
+                sorted(gen_df["season"].unique())
+            )
+
+        filtered = gen_df[
+            (gen_df["label"] == label_choice)
+            & (gen_df["season"] == season_choice)
+        ].copy()
+
+        if filtered.empty:
+            st.warning("Aucune courbe disponible pour ce filtre.")
+        else:
+            with c3:
+                sample_choice = st.selectbox(
+                    "Courbe générée",
+                    sorted(filtered["sample_id"].unique())
+                )
+
+            curve = (
+                filtered[filtered["sample_id"] == sample_choice]
+                .sort_values("hh_index")
+            )
+
+            fig_curve = go.Figure()
+
+            fig_curve.add_trace(go.Scatter(
+                x=curve["time_h"],
+                y=curve["puissance_w"],
+                mode="lines+markers",
+                name=f"Courbe {sample_choice}",
+                line=dict(width=3),
+                marker=dict(size=5),
+            ))
+
+            fig_curve.update_layout(
+                title=f"Courbe générée — {label_choice} / {season_choice}",
+                xaxis_title="Heure de la journée",
+                yaxis_title="Puissance générée (W)",
+                height=430,
+                hovermode="x unified",
+                margin=dict(l=0, r=0, t=40, b=0)
+            )
+
+            st.plotly_chart(fig_curve, use_container_width=True)
+
+            total_kwh = curve["energy_kwh_step"].sum()
+            max_power = curve["puissance_w"].max()
+            mean_power = curve["puissance_w"].mean()
+
+            m1, m2, m3 = st.columns(3)
+
+            with m1:
+                st.metric("Énergie journalière", f"{total_kwh:.2f} kWh")
+
+            with m2:
+                st.metric("Puissance maximale", f"{max_power:.0f} W")
+
+            with m3:
+                st.metric("Puissance moyenne", f"{mean_power:.0f} W")
+
+            st.caption(
+                "Chaque courbe générée contient 48 points : une journée complète "
+                "au pas de 30 minutes."
+            )
+
+    with tab_stats:
+        st.subheader("Analyse statistique des courbes générées")
+
+        daily_gen = (
+            gen_df
+            .groupby(["sample_id", "label", "season"])
+            .agg(
+                total_kwh=("energy_kwh_step", "sum"),
+                mean_power_w=("puissance_w", "mean"),
+                max_power_w=("puissance_w", "max"),
+                min_power_w=("puissance_w", "min"),
+            )
+            .reset_index()
         )
 
-    st.divider()
-    st.subheader("Resultats visuels du CVAE")
-    figs_gen = {
-        "Courbes generees vs reelles (RS et RP)": "fig_11_generated_profiles.png",
-        "Similarite statistique (test KS)":        "fig_12_ks_similarity.png",
-        "Erreur de reconstruction":                "fig_13_recon_error.png",
-        "Espace latent (PCA)":                     "fig_14_latent_space.png",
-    }
-    found   = {n: p for n, p in figs_gen.items() if os.path.exists(p)}
-    missing = [n      for n, p in figs_gen.items() if not os.path.exists(p)]
+        st.markdown("#### Résumé par courbe générée")
+        st.dataframe(daily_gen, use_container_width=True, hide_index=True)
 
-    if found:
-        sel_fig = st.selectbox("Selectionner une figure :", list(found.keys()))
-        st.image(found[sel_fig], use_container_width=True)
-        captions = {
-            "Courbes generees vs reelles (RS et RP)":
-                "Les courbes synthetiques reproduisent fidelement la forme generale "
-                "des courbes reelles — pics de week-end pour les RS, consommation reguliere pour les RP.",
-            "Espace latent (PCA)":
-                "Le CVAE a appris a separer RS et RP dans son espace latent, "
-                "confirmant que la condition est bien integree dans la generation.",
-        }
-        if sel_fig in captions:
-            st.caption(captions[sel_fig])
-    else:
-        st.warning(
-            "Les figures ne sont pas encore disponibles. "
-            "Executez `04_generation.ipynb` pour entrainer le CVAE, "
-            "puis relancez ce dashboard."
+        fig_box = px.box(
+            daily_gen,
+            x="label",
+            y="total_kwh",
+            color="season",
+            title="Distribution de l’énergie journalière générée",
+            labels={
+                "label": "Type de client",
+                "total_kwh": "Énergie journalière générée (kWh)",
+                "season": "Saison"
+            }
+        )
+
+        fig_box.update_layout(height=430)
+        st.plotly_chart(fig_box, use_container_width=True)
+
+        avg_profile = (
+            gen_df
+            .groupby(["label", "season", "time_h"])["puissance_w"]
+            .mean()
+            .reset_index()
+        )
+
+        fig_avg = px.line(
+            avg_profile,
+            x="time_h",
+            y="puissance_w",
+            color="label",
+            line_dash="season",
+            title="Profil moyen généré par type de client et saison",
+            labels={
+                "time_h": "Heure",
+                "puissance_w": "Puissance moyenne générée (W)",
+                "label": "Type de client",
+                "season": "Saison"
+            }
+        )
+
+        fig_avg.update_layout(height=430)
+        st.plotly_chart(fig_avg, use_container_width=True)
+
+    with tab_data:
+        st.subheader("Contenu du fichier CSV généré")
+
+        st.dataframe(
+            gen_df,
+            use_container_width=True,
+            hide_index=True
+        )
+
+        st.markdown(
+            """
+            **Colonnes du CSV :**
+
+            - `sample_id` : identifiant de la courbe générée ;
+            - `label` : type de client généré ;
+            - `season` : saison conditionnelle ;
+            - `hh_index` : pas demi-horaire de 0 à 47 ;
+            - `time_h` : heure de la journée ;
+            - `puissance_w` : puissance générée en watts ;
+            - `energy_kwh_step` : énergie consommée sur le pas de 30 minutes.
+            """
+        )
+
+    with tab_limits:
+        st.subheader("Limites de la génération")
+
+        st.markdown(
+            """
+            Les courbes générées sont utiles pour simuler des profils synthétiques,
+            mais elles doivent être interprétées avec prudence.
+
+            - Le CVAE apprend à partir des données disponibles : il peut reproduire leurs biais.
+            - Une courbe visuellement réaliste n’est pas forcément statistiquement parfaite.
+            - Il faut comparer les distributions réel/généré avec des tests statistiques.
+            - Les profils générés ne remplacent pas des mesures terrain réelles.
+
+            **Conclusion :** la génération est intéressante pour la simulation et l’augmentation
+            de données, mais elle doit rester accompagnée d’une validation.
+            """
         )
