@@ -1,0 +1,12 @@
+pandas
+numpy
+matplotlib
+seaborn
+scikit-learn
+scipy
+plotly
+streamlit
+torch
+holidays
+lightgbm
+notebook

@@ -71,6 +71,7 @@ Data-et-energie/
 ├── README.md
 ├── Readme.pdf
 └── .gitignore
+└── requirements.txt
 ```
 
 ---
@@ -235,16 +236,9 @@ source .venv/bin/activate
 
 ### 3. Install dependencies
 
-If a `requirements.txt` file is available, run:
 
 ```bash
 pip install -r requirements.txt
-```
-
-Otherwise, install the main dependencies manually:
-
-```bash
-pip install pandas numpy matplotlib seaborn scikit-learn scipy plotly streamlit torch holidays lightgbm notebook
 ```
 
 ### 4. Launch the notebooks
