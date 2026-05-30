@@ -1228,283 +1228,279 @@ elif page == "🤖 Qui est le client ?":
         else:
             st.warning("Aucune figure de classification trouvée dans outputs/figures/classification.")
 
-# PAGE 5 : PREVISION
+# PAGE 5 : PREVISION (modèle individuel 14j → 2j)
 elif page == "📈 Que va-t-il consommer ?":
-    st.title("📈 Etape 2 — Prédire la consommation future")
+    st.title("📈 Étape 2 — Prédire la consommation future d'un client")
 
     st.markdown(
         '''<div class="story-box">
-        <b>Objectif :</b> prédire la consommation électrique future à partir de l’historique.
-        Contrairement à la classification, l’output n’est pas une classe RP/RS,
-        mais une <b>série de valeurs numériques futures</b>.<br><br>
-        Ici, on prédit une journée complète sous forme de <b>48 demi-heures</b>.
+        <b>Objectif :</b> à partir des <b>14 derniers jours</b> d'un client,
+        prédire sa consommation pour les <b>2 jours suivants</b> (96 demi-heures).<br><br>
+        Quatre approches sont comparées : deux <b>baselines</b> (récente et hebdomadaire)
+        et deux <b>modèles résiduels</b> (Ridge et CNN 1D). Les résultats sont évalués
+        par segment <b>RP / RS</b> via le <b>WMAPE</b>.
         </div>''',
         unsafe_allow_html=True
     )
-
     st.markdown(
         '''<div class="why-box">
-        <strong>Pourquoi prévoir à 30 minutes ?</strong><br>
-        La moyenne journalière ne suffit pas pour gérer un réseau électrique.
-        Les pics du matin et du soir sont essentiels pour anticiper la charge,
-        éviter les surcharges et ajuster la production.
+        <strong>Approche résiduelle :</strong> les modèles n'apprennent pas directement
+        la courbe future — ils apprennent la <em>correction</em> à apporter à une baseline.
+        Cela stabilise l'apprentissage et tire profit des forts patterns hebdomadaires.
         </div>''',
         unsafe_allow_html=True
     )
 
-    df_feat, ts_30, FEAT_FORECAST, TARGET_FORECAST = prepare_forecast_data(df, ref)
+    #  Chargement des résultats pré-calculés 
+    RESULTS_FILE = Results_DIR / "prediction_results.csv"
+    WINDOWS_FILE = Results_DIR / "prediction_windows_sample.csv"
 
-    tab_data, tab_model, tab_pred, tab_figs, tab_limits = st.tabs(
-        [
-            "📊 Série temporelle",
-            "🤖 Modèles et métriques",
-            "📈 Prédiction interactive",
-            "🖼️ Figures notebook",
-            "⚠️ Limites"
-        ]
-    )
+    tab_results, tab_client, tab_figs, tab_limits = st.tabs([
+        "📊 Résultats par segment",
+        "👤 Prédiction par client",
+        "🖼️ Figures notebook",
+        "⚠️ Limites",
+    ])
 
-    with tab_data:
-        st.subheader("Série agrégée à 30 minutes")
-
+    #  Tab 1 : Résultats 
+    with tab_results:
+        st.subheader("Comparaison des modèles — WMAPE par segment")
         st.caption(
-            "La série représente la consommation agrégée des clients RP au pas de 30 minutes. "
-            "Chaque point correspond à une énergie consommée sur une demi-heure."
+            "Résultats calculés sur le jeu de test (30 derniers jours). "
+            "Le WMAPE mesure l'erreur relative pondérée : il est robuste aux créneaux à consommation nulle."
         )
 
-        fig_ts = go.Figure()
+        if RESULTS_FILE.exists():
+            test_results = pd.read_csv(RESULTS_FILE)
 
-        fig_ts.add_trace(go.Scatter(
-            x=ts_30[COL_DT],
-            y=ts_30["kwh_total"],
-            mode="lines",
-            name="Consommation réelle",
-            line=dict(color="#2196F3", width=0.8),
-            fill="tozeroy",
-            fillcolor="rgba(33,150,243,0.06)"
-        ))
-
-        fig_ts.update_layout(
-            xaxis_title="Date",
-            yaxis_title="kWh / 30 min",
-            height=350,
-            hovermode="x unified",
-            margin=dict(l=0, r=0, t=20, b=0)
-        )
-
-        st.plotly_chart(fig_ts, use_container_width=True)
-
-        st.info(
-            "Cette visualisation permet de voir la saisonnalité, les cycles journaliers "
-            "et les variations de charge dans le temps."
-        )
-
-    with tab_model:
-        st.subheader("Comparaison des modèles de prévision")
-
-        forecast_results = train_forecast_models(
-            df_feat,
-            FEAT_FORECAST,
-            TARGET_FORECAST
-        )
-
-        st.caption(
-            "Les modèles sont évalués sur les 20 % les plus récents de la série. "
-            "Le split respecte l’ordre chronologique pour éviter toute fuite de données."
-        )
-
-        m_cols = st.columns(len(forecast_results))
-
-        for i, (name, res) in enumerate(forecast_results.items()):
-            with m_cols[i]:
-                st.metric(
-                    label=name,
-                    value=f"MAE = {res['mae']:.3f} kWh",
-                    delta=f"MAPE = {res['mape']:.1f}%",
-                    delta_color="inverse"
-                )
-
-        comp = pd.DataFrame([
-            {
-                "Modèle": name,
-                "MAE (kWh / 30 min)": round(r["mae"], 4),
-                "RMSE (kWh / 30 min)": round(r["rmse"], 4),
-                "MAPE (%)": round(r["mape"], 2)
-            }
-            for name, r in forecast_results.items()
-        ])
-
-        st.dataframe(comp, use_container_width=True, hide_index=True)
-
-        st.markdown(
-            """
-            **Lecture des métriques :**
-
-            - **MAE** : erreur absolue moyenne.
-            - **RMSE** : pénalise davantage les grosses erreurs.
-            - **MAPE** : erreur relative moyenne, mais sensible aux valeurs proches de zéro.
-            """
-        )
-
-    with tab_pred:
-        st.subheader("Prédiction réelle vs prédite sur une journée")
-
-        forecast_results = train_forecast_models(
-            df_feat,
-            FEAT_FORECAST,
-            TARGET_FORECAST
-        )
-
-        HORIZON = 48
-        any_res = next(iter(forecast_results.values()))
-        n_test = len(any_res["Y_true"])
-        test_dates = any_res["test_dates"]
-
-        day_starts = list(range(HORIZON - 1, n_test, HORIZON))
-
-        if not day_starts:
-            day_starts = [0]
-
-        day_labels = []
-
-        for i in day_starts:
-            pred_start = pd.Timestamp(test_dates[i]) + pd.Timedelta(minutes=30)
-            day_labels.append(pred_start.strftime("%a %d %b %Y"))
-
-        sel_day_label = st.select_slider(
-            "Jour prédit :",
-            options=day_labels,
-            value=day_labels[len(day_labels) // 2],
-        )
-
-        chosen_row = day_starts[day_labels.index(sel_day_label)]
-
-        hh_axis = [
-            f"{(h // 2):02d}:{(h % 2) * 30:02d}"
-            for h in range(HORIZON)
-        ]
-
-        y_true = forecast_results["Regression Lineaire"]["Y_true"][chosen_row]
-
-        fig_pred = go.Figure()
-
-        fig_pred.add_trace(go.Scatter(
-            x=hh_axis,
-            y=y_true,
-            mode="lines+markers",
-            name="Réel",
-            line=dict(color="#1a1a2e", width=2.5),
-            marker=dict(size=4),
-        ))
-
-        for name, color in [
-            ("Regression Lineaire", "#2196F3"),
-            ("Random Forest", "#4CAF50")
-        ]:
-            y_pred = forecast_results[name]["Y_pred"][chosen_row]
-
-            fig_pred.add_trace(go.Scatter(
-                x=hh_axis,
-                y=y_pred,
-                mode="lines",
-                name=name,
-                line=dict(color=color, width=2, dash="dot"),
-            ))
-
-        fig_pred.update_layout(
-            xaxis_title="Heure de la journée prédite",
-            yaxis_title="kWh / 30 min",
-            height=420,
-            hovermode="x unified",
-            legend=dict(orientation="h", y=1.05),
-            margin=dict(l=0, r=0, t=20, b=0)
-        )
-
-        st.plotly_chart(fig_pred, use_container_width=True)
-
-        st.subheader("Erreur moyenne par demi-heure")
-
-        fig_mae_hh = go.Figure()
-
-        for name, color in [
-            ("Regression Lineaire", "#2196F3"),
-            ("Random Forest", "#4CAF50")
-        ]:
-            Y_te_arr = forecast_results[name]["Y_true"]
-            Y_pr_arr = forecast_results[name]["Y_pred"]
-            mae_hh = np.abs(Y_te_arr - Y_pr_arr).mean(axis=0)
-
-            fig_mae_hh.add_trace(go.Scatter(
-                x=hh_axis,
-                y=mae_hh,
-                mode="lines+markers",
-                name=name,
-                line=dict(color=color, width=2),
-                marker=dict(size=3),
-            ))
-
-        fig_mae_hh.update_layout(
-            xaxis_title="Heure de la journée",
-            yaxis_title="MAE moyenne (kWh / 30 min)",
-            height=340,
-            hovermode="x unified",
-            legend=dict(orientation="h", y=1.05),
-            margin=dict(l=0, r=0, t=20, b=0)
-        )
-
-        st.plotly_chart(fig_mae_hh, use_container_width=True)
-
-    with tab_figs:
-        st.subheader("Figures générées dans le notebook de prévision")
-
-        prediction_figs = {
-            "Prédictions vs réel": FIG_PREDICTION_DIR / "fig_07_predictions.png",
-            "MAE par heure": FIG_PREDICTION_DIR / "fig_08_mae_by_hour.png",
-        }
-
-        existing_prediction_figs = {
-            name: path for name, path in prediction_figs.items() if path.exists()
-        }
-
-        if existing_prediction_figs:
-            selected_fig = st.selectbox(
-                "Sélectionner une figure de prévision",
-                list(existing_prediction_figs.keys())
+            # Tableau principal
+            display_cols = ["modele", "segment", "n_examples", "MAE", "RMSE", "WMAPE", "sMAPE"]
+            display_cols = [c for c in display_cols if c in test_results.columns]
+            st.dataframe(
+                test_results[display_cols].sort_values(["segment", "WMAPE"]),
+                use_container_width=True,
+                hide_index=True,
             )
 
-            st.image(existing_prediction_figs[selected_fig], use_container_width=True)
+            # Graphique barres groupées par segment
+            for seg in ["RS", "RP", "ALL"]:
+                df_seg = test_results[test_results["segment"] == seg].sort_values("WMAPE")
+                if df_seg.empty:
+                    continue
 
-            captions = {
-                "Prédictions vs réel":
-                    "Cette figure compare la consommation réelle avec la consommation prédite.",
-                "MAE par heure":
-                    "Cette figure montre à quelles heures de la journée les erreurs sont les plus fortes.",
-                "Loss LSTM":
-                    "Cette figure montre la convergence du modèle LSTM pendant l’entraînement.",
-            }
-
-            if selected_fig in captions:
-                st.caption(captions[selected_fig])
+                fig_bar = go.Figure()
+                colors_bar = {
+                    "baseline_recent" : "#9E9E9E",
+                    "baseline_weekly" : "#FF9800",
+                    "ridge_residual"  : "#2196F3",
+                    "lgbm_residual"   : "#4CAF50",
+                    "cnn_residual"    : "#E91E63",
+                }
+                for _, row in df_seg.iterrows():
+                    fig_bar.add_trace(go.Bar(
+                        x=[row["modele"]],
+                        y=[row["WMAPE"]],
+                        name=row["modele"],
+                        marker_color=colors_bar.get(row["modele"], "#607D8B"),
+                        text=f"{row['WMAPE']:.1f}%",
+                        textposition="outside",
+                    ))
+                fig_bar.update_layout(
+                    title=f"WMAPE — segment {seg}",
+                    yaxis_title="WMAPE (%)",
+                    showlegend=False,
+                    height=300,
+                    margin=dict(l=0, r=0, t=40, b=0),
+                )
+                st.plotly_chart(fig_bar, use_container_width=True)
 
         else:
-            st.warning(
-                "Aucune figure de prévision trouvée dans outputs/figures/prediction."
+            st.info(
+                "Les résultats ne sont pas encore disponibles. "
+                "Lancez le notebook `03_prediction.ipynb` pour les générer, puis "
+                f"sauvegardez le DataFrame `test_results` dans : `{RESULTS_FILE}`"
+            )
+            st.code(
+                "# Ajoutez à la fin du notebook :\n"
+                "test_results.to_csv(Results_DIR / 'prediction_results.csv', index=False)",
+                language="python"
             )
 
-    with tab_limits:
-        st.subheader("Limites de la prévision")
+    #  Tab 2 : Prédiction par client 
+    with tab_client:
+        st.subheader("Visualisation de la prédiction pour un client")
 
+        if WINDOWS_FILE.exists():
+            windows_sample = pd.read_csv(WINDOWS_FILE)
+
+
+            # Filtres
+            col_seg, col_pdl = st.columns([1, 3])
+            with col_seg:
+                seg_filter = st.selectbox("Segment", ["Tous", "RP", "RS"])
+            with col_pdl:
+                pdl_list = sorted(windows_sample["pdl_id"].unique())
+                if seg_filter != "Tous":
+                    pdl_list = sorted(
+                        windows_sample.loc[windows_sample["segment"] == seg_filter, "pdl_id"].unique()
+                    )
+                pdl_sel = st.selectbox("Client (PDL)", pdl_list)
+
+            # Filtrage
+            sub = windows_sample[windows_sample["pdl_id"] == pdl_sel].copy()
+            if "forecast_start" in sub.columns:
+                sub["forecast_start"] = pd.to_datetime(sub["forecast_start"])
+                dates_avail = sub["forecast_start"].dt.strftime("%d/%m/%Y %Hh").tolist()
+                chosen_date = st.select_slider(
+                    "Fenêtre de prédiction",
+                    options=dates_avail,
+                    value=dates_avail[len(dates_avail) // 2] if dates_avail else dates_avail[0]
+                )
+                row = sub[sub["forecast_start"].dt.strftime("%d/%m/%Y %Hh") == chosen_date].iloc[0]
+            else:
+                row = sub.iloc[len(sub) // 2]
+
+            # Reconstruction des séries depuis les colonnes
+            HORIZON_PLOT = 96
+            hh_axis = [f"{h//2:02d}:{(h%2)*30:02d}" for h in range(HORIZON_PLOT)]
+
+            y_cols       = [c for c in sub.columns if c.startswith("y_")]
+            recent_cols  = [c for c in sub.columns if c.startswith("b_recent_")]
+            weekly_cols  = [c for c in sub.columns if c.startswith("b_weekly_")]
+            ridge_cols   = [c for c in sub.columns if c.startswith("ridge_")]
+            lgbm_cols    = [c for c in sub.columns if c.startswith("lgbm_")]
+            cnn_cols     = [c for c in sub.columns if c.startswith("cnn_")]
+
+            fig_client = go.Figure()
+
+            if y_cols:
+                y_vals = row[sorted(y_cols, key=lambda c: int(c.split("_")[-1]))].values.astype(float)
+                fig_client.add_trace(go.Scatter(
+                    x=hh_axis[:len(y_vals)], y=y_vals,
+                    mode="lines+markers", name="Réel",
+                    line=dict(color="#1a1a2e", width=2.5), marker=dict(size=3)
+                ))
+            if recent_cols:
+                v = row[sorted(recent_cols, key=lambda c: int(c.split("_")[-1]))].values.astype(float)
+                fig_client.add_trace(go.Scatter(x=hh_axis[:len(v)], y=v, mode="lines",
+                    name="Baseline récente", line=dict(color="#9E9E9E", dash="dot", width=1.8)))
+            if weekly_cols:
+                v = row[sorted(weekly_cols, key=lambda c: int(c.split("_")[-1]))].values.astype(float)
+                fig_client.add_trace(go.Scatter(x=hh_axis[:len(v)], y=v, mode="lines",
+                    name="Baseline hebdo", line=dict(color="#FF9800", dash="dot", width=1.8)))
+            if ridge_cols:
+                v = row[sorted(ridge_cols, key=lambda c: int(c.split("_")[-1]))].values.astype(float)
+                fig_client.add_trace(go.Scatter(x=hh_axis[:len(v)], y=v, mode="lines",
+                    name="Ridge résiduel", line=dict(color="#2196F3", dash="dash", width=2)))
+            if lgbm_cols:
+                v = row[sorted(lgbm_cols, key=lambda c: int(c.split("_")[-1]))].values.astype(float)
+                fig_client.add_trace(go.Scatter(x=hh_axis[:len(v)], y=v, mode="lines",
+                    name="LightGBM résiduel", line=dict(color="#4CAF50", dash="dash", width=2)))
+            if cnn_cols:
+                v = row[sorted(cnn_cols, key=lambda c: int(c.split("_")[-1]))].values.astype(float)
+                fig_client.add_trace(go.Scatter(x=hh_axis[:len(v)], y=v, mode="lines",
+                    name="CNN résiduel", line=dict(color="#E91E63", dash="dash", width=2)))
+
+            seg_label = row.get("segment", "?")
+            fig_client.update_layout(
+                title=f"Client {pdl_sel} ({seg_label}) — Prédiction sur 2 jours",
+                xaxis_title="Heure de la journée",
+                yaxis_title="kWh / 30 min",
+                height=440,
+                hovermode="x unified",
+                legend=dict(orientation="h", y=1.08),
+                margin=dict(l=0, r=0, t=50, b=0),
+            )
+            st.plotly_chart(fig_client, use_container_width=True)
+
+            # Métriques locales
+            if y_cols and ridge_cols:
+                y_flat = row[sorted(y_cols,    key=lambda c: int(c.split("_")[-1]))].values.astype(float)
+                r_flat = row[sorted(ridge_cols, key=lambda c: int(c.split("_")[-1]))].values.astype(float)
+                mae_r  = float(np.mean(np.abs(y_flat - r_flat)))
+                rec_flat = row[sorted(recent_cols, key=lambda c: int(c.split("_")[-1]))].values.astype(float) if recent_cols else r_flat
+                mae_b    = float(np.mean(np.abs(y_flat - rec_flat)))
+                m1, m2, m3 = st.columns(3)
+                with m1: st.metric("MAE Ridge",         f"{mae_r:.4f} kWh")
+                with m2: st.metric("MAE Baseline récente", f"{mae_b:.4f} kWh")
+                with m3: st.metric("Gain vs baseline",  f"{((mae_b - mae_r)/mae_b*100):.1f}%",
+                                   delta_color="normal")
+
+        else:
+            st.info(
+                "Aucun fichier d'exemples de prédiction trouvé. "
+                f"Attendu : `{WINDOWS_FILE}`\n\n"
+                "Ajoutez à la fin du notebook pour générer ce fichier :"
+            )
+            st.code(
+                "# Exporter un échantillon de fenêtres avec prédictions\n"
+                "sample_idx = np.random.default_rng(42).choice(idx_test, size=min(500, len(idx_test)), replace=False)\n"
+                "sample_df  = windows.iloc[sample_idx][[\"pdl_id\", \"segment\", \"forecast_start\"]].copy()\n\n"
+                "for i, col_idx in enumerate(sample_idx):\n"
+                "    for h in range(HORIZON):\n"
+                "        sample_df.loc[sample_idx[i], f'y_{h}']        = float(Y[col_idx, h])\n"
+                "        sample_df.loc[sample_idx[i], f'b_recent_{h}'] = float(B_recent[col_idx, h])\n"
+                "        sample_df.loc[sample_idx[i], f'b_weekly_{h}'] = float(B_weekly[col_idx, h])\n"
+                "        pred_r = ridge_model.predict(X_tab[[col_idx]]).flatten()\n"
+                "        sample_df.loc[sample_idx[i], f'ridge_{h}']    = float(np.clip(B_base[col_idx, h] + pred_r[h], 0, None))\n\n"
+                "sample_df.to_csv(Results_DIR / 'prediction_windows_sample.csv', index=False)\n"
+                "print('Fichier sauvegardé.')",
+                language="python"
+            )
+
+    #  Tab 3 : Figures notebook 
+    with tab_figs:
+        st.subheader("Figures générées dans le notebook de prédiction")
+
+        prediction_figs = {
+            "Exemples de prédictions (6 clients)"      : FIG_PREDICTION_DIR / "fig_pred_01_exemples.png",
+            "Comparaison WMAPE par segment"             : FIG_PREDICTION_DIR / "fig_pred_02_wmape_comparaison.png",
+            "MAE intra-journalière"                     : FIG_PREDICTION_DIR / "fig_pred_03_mae_intraday.png",
+            "Courbe de loss CNN"                        : FIG_PREDICTION_DIR / "fig_pred_04_cnn_loss.png",
+            "Distribution des erreurs (boxplot)"        : FIG_PREDICTION_DIR / "fig_pred_05_erreurs_boxplot.png",
+            "Historique + prédiction — client exemple"  : FIG_PREDICTION_DIR / "fig_pred_06_client_preview.png",
+        }
+
+        existing = {name: path for name, path in prediction_figs.items() if path.exists()}
+
+        if existing:
+            fig_sel = st.selectbox("Sélectionner une figure", list(existing.keys()))
+            st.image(str(existing[fig_sel]), use_container_width=True)
+
+            captions = {
+                "Exemples de prédictions (6 clients)"     : "Comparaison réel vs prédit sur 6 clients du jeu de test.",
+                "Comparaison WMAPE par segment"            : "Meilleur modèle par segment RS, RP, ALL selon le WMAPE.",
+                "MAE intra-journalière"                    : "À quelles heures les modèles se trompent-ils le plus ?",
+                "Courbe de loss CNN"                       : "Convergence du CNN 1D résiduel pendant l'entraînement.",
+                "Distribution des erreurs (boxplot)"       : "Distribution des erreurs absolues, sans les outliers extrêmes.",
+                "Historique + prédiction — client exemple" : "Historique récent et prédiction pour un client type.",
+            }
+            st.caption(captions.get(fig_sel, ""))
+        else:
+            st.warning(
+                "Aucune figure trouvée dans `outputs/figures/prediction/`. "
+                "Exécutez le notebook `03_prediction.ipynb` pour les générer."
+            )
+
+    #  Tab 4 : Limites 
+    with tab_limits:
+        st.subheader("Limites de la prédiction individuelle")
         st.markdown(
             """
-            Même si les modèles capturent bien les tendances générales, la prévision reste difficile pour plusieurs raisons :
+            Même avec un modèle résiduel bien calibré, plusieurs défis subsistent :
 
-            - les pics de consommation sont parfois brusques ;
-            - les comportements humains ne sont pas parfaitement réguliers ;
-            - le MAPE peut être instable si les valeurs réelles sont proches de zéro ;
-            - les modèles simples ne capturent pas toujours les dépendances temporelles longues ;
-            - les modèles neuronaux comme LSTM sont plus puissants mais plus coûteux à entraîner.
+            - **Résidences secondaires (RS)** : consommation souvent nulle ou très variable,
+              rendant le MAPE instable. Le WMAPE atténue ce biais mais ne l'efface pas.
+            - **Événements atypiques** (pannes, vacances non régulières) :
+              non capturés par les features historiques.
+            - **Dépendances longues** : le modèle Ridge ne capte pas les effets
+              au-delà des 14 jours de fenêtre d'entrée.
+            - **Généralisabilité** : le modèle est entraîné sur un seul dataset régional ;
+              il peut ne pas se comporter de la même façon sur d'autres zones.
 
-            **Conclusion :** la prévision est utile pour anticiper la charge globale, mais elle doit toujours être accompagnée d’une analyse des erreurs.
+            **Piste d'amélioration :** un Transformer temporel (TFT) ou un modèle de type
+            N-BEATS permettrait de capter des dépendances plus longues tout en restant
+            interprétable.
             """
         )
 
