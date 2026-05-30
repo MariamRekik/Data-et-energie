@@ -2,130 +2,290 @@
 
 ## Project Overview
 
-This project focuses on the analysis and prediction of energy consumption using data science and machine learning techniques.
-The objective is to transform raw energy-related data into actionable insights through preprocessing, visualization, modeling, and dashboarding.
+**Data & Énergie** is a data science project focused on the analysis, classification, prediction, and generation of residential energy consumption profiles.
 
-The project combines:
+The project uses half-hourly electricity consumption data and customer labels to study consumption behavior across different types of residences. The workflow combines exploratory data analysis, clustering, supervised classification, time-series forecasting, generative modeling, and an interactive Streamlit dashboard.
 
-* Data cleaning and transformation
-* Exploratory Data Analysis (EDA)
-* Predictive modeling
-* Interactive visualization
-* Dashboard generation
+The main objective is to transform raw consumption data into meaningful insights and predictive tools that can support energy analysis and decision-making.
 
+---
 
-## Objectives
+## Main Objectives
 
-The main goals of this project are:
+The project aims to:
 
-* Analyze energy consumption patterns
-* Identify trends and anomalies in the dataset
-* Build predictive models for energy forecasting
-* Create visual dashboards for decision-making support
-* Automate data analysis workflows
+* Analyze electricity consumption patterns over time.
+* Identify typical customer consumption profiles through clustering.
+* Classify customers according to their residence type.
+* Forecast short-term energy consumption using machine learning and deep learning models.
+* Generate synthetic consumption curves for analysis and experimentation.
+* Provide an interactive dashboard to explore the data, models, and results.
 
+---
+
+## Dataset
+
+The project uses two main data files stored in the `Data/` folder:
+
+```text
+Data/
+├── RES2-6-9.csv
+└── RES2-6-9-labels.csv
+```
+
+The consumption dataset contains half-hourly measurements for residential customers.
+The labels dataset contains customer identifiers, residence labels, and cluster information.
+
+Main information used in the project includes:
+
+* Customer identifier
+* Timestamp
+* Consumption value
+* Residence type label
+* Cluster assignment
+
+---
 
 ## Project Structure
 
 ```text
 Data-et-energie/
 │
-├── APP/                # Dashboard 
-├── Data/               # Raw and processed datasets
-├── Notebooks/          # Jupyter notebooks for analysis and modeling
-├── outputs/            # Generated figures, predictions and reports
+├── APP/
+│   └── app.py                         # Streamlit dashboard
+│
+├── Data/
+│   ├── RES2-6-9.csv                   # Energy consumption dataset
+│   └── RES2-6-9-labels.csv            # Customer labels and clusters
+│
+├── Notebooks/
+│   ├── 01_clustering.ipynb            # Customer profile clustering
+│   ├── 02_classification.ipynb        # Residence type classification
+│   ├── 03_prediction.ipynb            # Energy consumption forecasting
+│   └── 04_generation.ipynb            # Synthetic consumption generation
+│
+├── outputs/
+│   ├── figures/                       # Generated visualizations
+│   └── results/                       # CSV result files
 │
 ├── README.md
 ├── Readme.pdf
 └── .gitignore
 ```
+
+---
+
 ## Methodology
 
-### 1. Data Collection
+### 1. Data Preprocessing
 
-Energy-related datasets were collected and organized for analysis.
+The preprocessing step includes:
 
-### 2. Data Preprocessing
+* Loading raw consumption and label data.
+* Checking missing values and duplicated records.
+* Converting timestamps into exploitable time-based features.
+* Preparing customer-level and time-window-based datasets.
+* Creating features related to time, seasonality, residence type, and consumption history.
 
-The preprocessing phase includes:
+### 2. Exploratory Data Analysis
 
-* Missing value handling
-* Data cleaning
-* Feature engineering
-* Data normalization
+Exploratory analysis is used to understand the structure of the data and detect consumption patterns.
 
-### 3. Exploratory Data Analysis
+The analysis includes:
 
-Different visualizations were used to:
+* Consumption distribution.
+* Daily and weekly consumption patterns.
+* Differences between residence types.
+* Seasonal and time-of-day effects.
+* Customer variability and activity levels.
 
-* Detect trends
-* Understand seasonality
-* Identify correlations between variables
+### 3. Clustering
 
-### 4. Predictive Modeling
+The clustering notebook identifies groups of customers with similar consumption behavior.
 
-Machine learning models were implemented to forecast energy-related indicators.
+The workflow includes:
 
-Examples of possible models:
+* Feature extraction from consumption profiles.
+* Standardization of customer-level features.
+* K-Means clustering.
+* Silhouette score analysis.
+* PCA visualization.
+* Interpretation of typical intraday profiles.
 
-* Linear Regression
-* Random Forest
-* Time Series Forecasting
+Generated outputs include clustering visualizations such as silhouette plots, PCA projections, and intraday consumption profiles.
 
-### 5. Evaluation
+### 4. Classification
 
-Model performance was evaluated using metrics such as:
+The classification notebook aims to predict the residence type of customers using their consumption behavior.
 
-* RMSE
+The workflow includes:
+
+* Feature engineering from consumption time series.
+* Train/test splitting.
+* Model comparison.
+* Evaluation using classification metrics.
+* Confusion matrix visualization.
+* Feature importance analysis.
+
+Several machine learning approaches are tested, including classical models and neural-network-based methods.
+
+### 5. Prediction
+
+The prediction notebook focuses on short-term energy forecasting.
+
+The forecasting task is defined as:
+
+* Input: past consumption history.
+* Output: future consumption over a short prediction horizon.
+
+The approach compares baseline methods and machine learning models, including:
+
+* Recent consumption baseline.
+* Weekly consumption baseline.
+* Ridge regression.
+* LightGBM résiduel
+* Deep learning models such as CNN-based architectures.
+
+The models are evaluated using forecasting metrics such as:
+
+* WMAPE
 * MAE
-* R² Score
+* RMSE
+* sMAPE
+* Error by prediction horizon
+* Error by time of day
 
-## Results
+### 6. Generation
 
-The project provides:
+The generation notebook explores the creation of synthetic consumption curves.
 
-* Energy consumption visualizations
-* Predictive insights
-* Interactive dashboards
-* Automated analytical workflows
+The objective is to generate realistic energy consumption profiles that can be used for analysis, experimentation, or data augmentation.
 
+The workflow includes deep learning models and generated output curves saved in the `outputs/results/` folder.
+
+### 7. Interactive Dashboard
+
+The Streamlit application provides an interactive interface to explore the project results.
+
+The dashboard includes:
+
+* Dataset overview.
+* Consumption visualizations.
+* Clustering results.
+* Classification results.
+* Prediction results.
+* Generated figures and summary indicators.
+
+---
+
+## Outputs
+
+The project generates several outputs stored in the `outputs/` folder.
+
+```text
+outputs/
+├── figures/
+│   ├── clustering/
+│   ├── classification/
+│   ├── prediction/
+│   └── generation/
+│
+└── results/
+    ├── cluster_results.csv
+    └── courbes_generees_cvae.csv
+```
+
+Examples of generated outputs include:
+
+* Clustering silhouette plot.
+* PCA visualization of customer profiles.
+* Intraday consumption profiles.
+* Classification confusion matrices.
+* Feature importance plots.
+* Prediction curves.
+* Error analysis by hour.
+* Generated synthetic consumption curves.
+
+---
 
 ## How to Run the Project
 
-### Clone the repository
+### 1. Clone the repository
 
 ```bash
 git clone https://github.com/MariamRekik/Data-et-energie.git
 cd Data-et-energie
 ```
 
-### Install dependencies
+### 2. Create a virtual environment
+
+On Windows:
+
+```bash
+python -m venv .venv
+.venv\Scripts\activate
+```
+
+On macOS/Linux:
+
+```bash
+python3 -m venv .venv
+source .venv/bin/activate
+```
+
+### 3. Install dependencies
+
+If a `requirements.txt` file is available, run:
 
 ```bash
 pip install -r requirements.txt
 ```
 
-### Launch Jupyter Notebook
+Otherwise, install the main dependencies manually:
+
+```bash
+pip install pandas numpy matplotlib seaborn scikit-learn scipy plotly streamlit torch holidays lightgbm notebook
+```
+
+### 4. Launch the notebooks
 
 ```bash
 jupyter notebook
 ```
 
+Then open the notebooks from the `Notebooks/` folder and run them in order:
+
+```text
+01_clustering.ipynb
+02_classification.ipynb
+03_prediction.ipynb
+04_generation.ipynb
+```
+
+### 5. Launch the Streamlit dashboard
+
+```bash
+streamlit run APP/app.py
+```
+
+The dashboard will open locally in the browser, usually at:
+
+```text
+http://localhost:8501
+```
+
 ---
 
-## Future Improvements
+## Results Summary
 
-Possible extensions include:
+The project provides:
 
-* Deep learning forecasting models
-* Real-time data integration
-* Deployment as a web application
-* API integration
-* Advanced dashboard analytics
+* A structured analysis of residential electricity consumption.
+* Customer segmentation based on consumption behavior.
+* Classification models for residence type prediction.
+* Short-term forecasting models for future energy consumption.
+* Synthetic consumption curve generation.
+* An interactive dashboard for visualization and interpretation.
 
-
-This project was developed for academic and educational purposes.
-
-
-
+The results are mainly intended for academic analysis, model comparison, and understanding energy consumption patterns.
 
