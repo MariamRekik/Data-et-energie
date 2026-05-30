@@ -538,12 +538,12 @@ with st.sidebar:
 
 # Verification des fichiers 
 data_ok = os.path.exists(DATA_PATH) and os.path.exists(LABELS_PATH)
-if not data_ok:
-    st.error(
-        f"Fichiers de donnees introuvables. "
-        f"Placez `{DATA_PATH}` et `{LABELS_PATH}` dans le meme dossier que `app.py`."
-    )
-    st.stop()
+#if not data_ok:
+ #   st.error(
+   #     f"Fichiers de donnees introuvables. "
+   #     f"Placez `{DATA_PATH}` et `{LABELS_PATH}` dans le meme dossier que `app.py`."
+  #  )
+  #  st.stop()
 
 df, ref = load_raw_data()
 features_pdl, daily = compute_features(df, ref)
@@ -1228,7 +1228,7 @@ elif page == "🤖 Qui est le client ?":
         else:
             st.warning("Aucune figure de classification trouvée dans outputs/figures/classification.")
 
-# PAGE 5 : PREVISION (modèle individuel 14j → 2j)
+# PAGE 5 : PREVISION
 elif page == "📈 Que va-t-il consommer ?":
     st.title("📈 Étape 2 — Prédire la consommation future d'un client")
 
