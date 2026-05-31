@@ -10,7 +10,17 @@ import pandas as pd
 import plotly.graph_objects as go
 import plotly.express as px
 import streamlit as st
+import joblib
 from pathlib import Path
+
+try:
+    import holidays as _holidays_pkg
+    def _make_fr_holidays(years):
+        return _holidays_pkg.France(years=years)
+except ImportError:
+    class _EmptyHolidays:
+        def __contains__(self, d): return False
+    def _make_fr_holidays(years): return _EmptyHolidays()
 from sklearn.decomposition import PCA
 from sklearn.ensemble import RandomForestClassifier, RandomForestRegressor
 from sklearn.linear_model import LinearRegression, LogisticRegression
@@ -41,8 +51,12 @@ np.random.seed(RANDOM_STATE)
 
 BASE_DIR = Path(__file__).resolve().parent.parent
 
-DATA_PATH = BASE_DIR / "Data" / "RES2-6-9.csv"
+DATA_PATH   = BASE_DIR / "Data" / "RES2-6-9.csv"
 LABELS_PATH = BASE_DIR / "Data" / "RES2-6-9-labels.csv"
+
+# URLs de descarga directa (GitHub Releases — fallback si los archivos locales no existen)
+DATA_URL   = "https://github.com/nathanaellacaille-jpg/enedisdata/releases/download/data-v1/RES2-6-9.csv"
+LABELS_URL = "https://github.com/nathanaellacaille-jpg/enedisdata/releases/download/data-v1/RES2-6-9-labels.csv"
 
 OUTPUTS_DIR = BASE_DIR / "outputs"
 FIGURES_DIR = OUTPUTS_DIR / "figures"
@@ -53,7 +67,8 @@ Results_DIR = OUTPUTS_DIR / "results"
 FIG_CLUSTERING_DIR = FIGURES_DIR / "clustering"
 FIG_CLASSIFICATION_DIR = FIGURES_DIR / "classification"
 FIG_PREDICTION_DIR = FIGURES_DIR / "prediction"
-GENERATION_CSV_PATH = Results_DIR/ "courbes_generees_cvae.csv"
+GENERATION_CSV_PATH = Results_DIR / "courbes_generees_cvae.csv"
+MODEL_PATH = BASE_DIR / "models" / "modele_final_ridge.joblib"
 
 COL_PDL = "pdl_id"
 COL_DT  = "horodate"
@@ -71,21 +86,89 @@ FEATURE_COLS = [
 
 COLORS = {"RP": "#2196F3", "RS": "#FF5722"}
 
+# ──────────────────────────────────────────────────────────────────
+# Funciones de inferencia Ridge (del notebook de inferencia)
+# ──────────────────────────────────────────────────────────────────
+def _season_from_month(m):
+    if m in [12, 1, 2]: return 0
+    if m in [3, 4, 5]:  return 1
+    if m in [6, 7, 8]:  return 2
+    return 3
+
+def _is_school_holiday_proxy(dt):
+    return int(dt.month in [7, 8, 12])
+
+def _longest_run_bool(values):
+    best = cur = 0
+    for v in values:
+        cur = cur + 1 if v else 0
+        best = max(best, cur)
+    return best
+
+def _build_extra_features(past_seq, anchor_time, segment, fr_holidays):
+    past_seq = np.asarray(past_seq, dtype=np.float32)
+    forecast_start = anchor_time + pd.Timedelta(minutes=30)
+    dow   = forecast_start.weekday()
+    month = forecast_start.month
+    season = _season_from_month(month)
+
+    last_1d  = past_seq[-48:]
+    last_2d  = past_seq[-96:]
+    last_7d  = past_seq[-336:]
+    last_14d = past_seq[-672:]
+
+    active_30       = past_seq > 0.02
+    daily_energy_14 = last_14d.reshape(-1, 48).sum(axis=1)
+    active_days_14  = daily_energy_14 > 1.0
+    daily_energy_7  = last_7d.reshape(-1, 48).sum(axis=1)
+    active_days_7   = daily_energy_7 > 1.0
+
+    past_day_dates  = [forecast_start.normalize() - pd.Timedelta(days=d) for d in range(14, 0, -1)]
+    is_weekend_past = np.array([d.weekday() >= 5 for d in past_day_dates])
+    weekday_energy  = daily_energy_14[~is_weekend_past].sum() if (~is_weekend_past).any() else 0.0
+    weekend_energy  = daily_energy_14[is_weekend_past].sum()  if is_weekend_past.any()   else 0.0
+    eps = 1e-6
+
+    feats = []
+    feats.extend([
+        np.sin(2*np.pi*dow/7), np.cos(2*np.pi*dow/7), float(dow >= 5),
+        np.sin(2*np.pi*month/12), np.cos(2*np.pi*month/12),
+        float(forecast_start.date() in fr_holidays),
+        float(_is_school_holiday_proxy(forecast_start)),
+    ])
+    feats.extend([float(season == s) for s in range(4)])
+    feats.extend([float(segment == "RS"), float(segment == "RP")])
+    feats.extend([past_seq[-1], past_seq[-48], past_seq[-96], past_seq[-336], past_seq[-672]])
+    for arr in [last_1d, last_2d, last_7d, last_14d]:
+        feats.extend([arr.mean(), arr.std(), arr.min(), arr.max(), arr.sum()])
+    feats.extend([
+        active_30[-48:].mean(), active_30[-96:].mean(), active_30[-336:].mean(), active_30[-672:].mean(),
+        active_days_7.mean(), active_days_14.mean(), active_days_7.sum(), active_days_14.sum(),
+        _longest_run_bool(active_days_14), daily_energy_7.mean(), daily_energy_7.std(),
+        daily_energy_14.mean(), daily_energy_14.std(), weekend_energy, weekday_energy,
+        weekend_energy / (weekday_energy + eps),
+    ])
+    feats.extend([
+        last_7d.mean()/(last_14d.mean()+eps), last_2d.mean()/(last_7d.mean()+eps),
+        last_1d.mean()/(last_7d.mean()+eps),
+        last_7d.mean()-last_14d.mean(), last_2d.mean()-last_7d.mean(), last_1d.mean()-last_7d.mean(),
+    ])
+    return np.asarray(feats, dtype=np.float32)
+
+
+@st.cache_resource(show_spinner="Cargando modelo Ridge...")
+def load_ridge_model():
+    if not MODEL_PATH.exists():
+        return None
+    return joblib.load(MODEL_PATH)
+
 
 # CSS
 
 st.markdown("""
 <style>
 
-/* ===== Fond général ===== */
-.main {
-    background-color: #0e1117;
-}
-
-/* ===== Texte global ===== */
-html, body, [class*="css"] {
-    color: #FAFAFA;
-}
+/* Fond et texte : se adaptan al tema del sistema (claro u oscuro) */
 
 /* ===== Metric cards ===== */
 .metric-card {
@@ -169,11 +252,40 @@ html, body, [class*="css"] {
 """, unsafe_allow_html=True)
 
 
-# Chargement des donnees
- 
-@st.cache_data(show_spinner="Chargement des donnees brutes...")
+# ──────────────────────────────────────────────────────────────────
+# Chargement des donnees — architecture lazy
+# ref  : carga instantánea (~13 KB)
+# df   : solo se carga cuando la página lo necesita (8.7M filas)
+# ──────────────────────────────────────────────────────────────────
+
+@st.cache_data(show_spinner="Chargement des etiquettes...")
+def load_ref():
+    """Carga solo el fichero de etiquetas (tiny, instantáneo)."""
+    _REF_CACHE = Results_DIR / "ref_cache.pkl"
+    Results_DIR.mkdir(parents=True, exist_ok=True)
+    if _REF_CACHE.exists():
+        return pd.read_pickle(_REF_CACHE)
+    if LABELS_PATH.exists():
+        ref = pd.read_csv(LABELS_PATH, sep=None, engine="python")
+    else:
+        ref = pd.read_csv(LABELS_URL)
+    ref.columns = ["pdl_id", "label_rs_rp", "cluster_ref"]
+    ref.to_pickle(_REF_CACHE)
+    return ref
+
+
+@st.cache_data(show_spinner="Chargement des donnees brutes (première fois uniquement)...")
 def load_raw_data():
-    raw = pd.read_csv(DATA_PATH, sep=None, engine="python")
+    """Carga los 8.7M de filas. Solo se llama desde las páginas que lo necesitan."""
+    _DF_CACHE = Results_DIR / "df_cache.pkl"
+    Results_DIR.mkdir(parents=True, exist_ok=True)
+    if _DF_CACHE.exists():
+        return pd.read_pickle(_DF_CACHE)
+    if DATA_PATH.exists():
+        raw = pd.read_csv(DATA_PATH, sep=None, engine="python")
+    else:
+        with st.spinner("Descargando datos (~30 s la primera vez)..."):
+            raw = pd.read_csv(DATA_URL)
     raw.columns = [COL_PDL, COL_DT, COL_PWR]
     raw[COL_DT] = pd.to_datetime(raw[COL_DT], utc=True, errors="coerce")
     raw[COL_DT] = raw[COL_DT].dt.tz_convert("Europe/Paris")
@@ -185,14 +297,33 @@ def load_raw_data():
     df["is_weekend"] = (df["dow"] >= 5).astype(int)
     df["hh_index"]   = df[COL_DT].dt.hour * 2 + df[COL_DT].dt.minute // 30
     df["energy_kwh"] = df[COL_PWR] * 0.5 / 1000
-    ref = pd.read_csv(LABELS_PATH, sep=None, engine="python")
-    ref.columns = ["pdl_id", "label_rs_rp", "cluster_ref"]
-    return df, ref
+    # Guardar versión compacta (float32 reduce de 542MB a ~180MB)
+    df_save = df.copy()
+    df_save[COL_PWR]      = df_save[COL_PWR].astype("float32")
+    df_save["energy_kwh"] = df_save["energy_kwh"].astype("float32")
+    df_save.to_pickle(_DF_CACHE)
+    return df
 
 
 @st.cache_data(show_spinner="Calcul des features client...")
-def compute_features(_df, _ref):
-    df, ref = _df.copy(), _ref.copy()
+def compute_features(_ref):
+    """Calcula features por cliente. Si los caches existen, carga al instante."""
+    _FEAT_CACHE      = Results_DIR / "features_pdl_cache.csv"
+    _DAILY_CACHE     = Results_DIR / "daily_cache.csv"
+    _INTRADAY_CACHE  = Results_DIR / "intraday_cache.pkl"
+
+    if _FEAT_CACHE.exists() and _DAILY_CACHE.exists():
+        features_pdl = pd.read_csv(_FEAT_CACHE)
+        daily        = pd.read_csv(_DAILY_CACHE)
+        daily["date"] = pd.to_datetime(daily["date"])
+        # Pre-compute intraday if not cached yet
+        if not _INTRADAY_CACHE.exists():
+            _compute_and_save_intraday(_ref)
+        return features_pdl, daily
+
+    # Primera vez: necesita los datos brutos
+    ref = _ref
+    df  = load_raw_data()
 
     daily = (
         df.groupby([COL_PDL, "date"])
@@ -294,11 +425,50 @@ def compute_features(_df, _ref):
     on=COL_PDL,
     how="inner"
 )
+    Results_DIR.mkdir(parents=True, exist_ok=True)
+    features_pdl.to_csv(_FEAT_CACHE, index=False)
+    daily.to_csv(_DAILY_CACHE, index=False)
+    _compute_and_save_intraday(ref, df)
     return features_pdl, daily
+
+
+def _compute_and_save_intraday(ref, df=None):
+    """Pre-computa el perfil intradiario (label × hh_index) y lo guarda."""
+    _INTRADAY_CACHE = Results_DIR / "intraday_cache.pkl"
+    if _INTRADAY_CACHE.exists():
+        return
+    if df is None:
+        df = load_raw_data()
+    intraday = (
+        df.merge(ref[["pdl_id", "label_rs_rp"]], on="pdl_id", how="left")
+        .groupby(["label_rs_rp", "hh_index"])["energy_kwh"]
+        .mean().reset_index()
+    )
+    intraday["Type"]  = intraday["label_rs_rp"].map({0: "RP", 1: "RS"})
+    intraday["Heure"] = intraday["hh_index"].apply(lambda x: f"{x//2:02d}:{(x%2)*30:02d}")
+    Results_DIR.mkdir(parents=True, exist_ok=True)
+    intraday.to_pickle(_INTRADAY_CACHE)
+
+
+@st.cache_data(show_spinner="Chargement du profil intra-journalier...")
+def load_intraday(_ref):
+    """Carga el perfil intradiario pre-computado (tiny, instantáneo si existe)."""
+    _INTRADAY_CACHE = Results_DIR / "intraday_cache.pkl"
+    if _INTRADAY_CACHE.exists():
+        return pd.read_pickle(_INTRADAY_CACHE)
+    # Primera vez: calcular desde los datos brutos
+    df = load_raw_data()
+    _compute_and_save_intraday(_ref, df)
+    return pd.read_pickle(_INTRADAY_CACHE)
 
 
 @st.cache_resource(show_spinner="Entrainement des classifieurs...")
 def train_classifiers(_X_train, _y_train):
+    _CLF_CACHE = Results_DIR / "classifiers_cache.joblib"
+
+    if _CLF_CACHE.exists():
+        return joblib.load(_CLF_CACHE)
+
     models = {
         "Regression Logistique": LogisticRegression(
             max_iter=2000, class_weight="balanced", random_state=RANDOM_STATE),
@@ -318,11 +488,19 @@ def train_classifiers(_X_train, _y_train):
         cv_f1 = cross_val_score(clf, _X_train, _y_train, cv=cv, scoring="f1_macro").mean()
         trained[name] = clf
         results[name] = {"cv_f1_macro": cv_f1}
+
+    Results_DIR.mkdir(parents=True, exist_ok=True)
+    joblib.dump((trained, results), _CLF_CACHE)
     return trained, results
 
 
 @st.cache_data(show_spinner="Application du clustering K-Means...")
 def run_clustering(_features_pdl):
+    _CLUST_CACHE = Results_DIR / "clustering_cache.joblib"
+
+    if _CLUST_CACHE.exists():
+        return joblib.load(_CLUST_CACHE)
+
     X = (
         _features_pdl[FEATURE_COLS]
         .replace([np.inf, -np.inf], np.nan)
@@ -333,30 +511,22 @@ def run_clustering(_features_pdl):
     scaler = StandardScaler()
     X_scaled = scaler.fit_transform(X)
 
-    kmeans = KMeans(
-        n_clusters=10,
-        random_state=RANDOM_STATE,
-        n_init=20
-    )
-
+    kmeans = KMeans(n_clusters=10, random_state=RANDOM_STATE, n_init=20)
     clusters = kmeans.fit_predict(X_scaled)
 
     clustered = _features_pdl.copy()
     clustered["cluster_kmeans"] = clusters
 
     silhouette = silhouette_score(X_scaled, clusters)
-
-    ari = adjusted_rand_score(
-        clustered["cluster_ref"],
-        clustered["cluster_kmeans"]
-    )
+    ari = adjusted_rand_score(clustered["cluster_ref"], clustered["cluster_kmeans"])
 
     pca = PCA(n_components=2, random_state=RANDOM_STATE)
     coords = pca.fit_transform(X_scaled)
-
     clustered["PC1"] = coords[:, 0]
     clustered["PC2"] = coords[:, 1]
 
+    Results_DIR.mkdir(parents=True, exist_ok=True)
+    joblib.dump((clustered, silhouette, ari), _CLUST_CACHE)
     return clustered, silhouette, ari
 
 @st.cache_data(show_spinner="Preparation des donnees de prevision (30 min, RP)...")
@@ -545,8 +715,9 @@ data_ok = os.path.exists(DATA_PATH) and os.path.exists(LABELS_PATH)
   #  )
   #  st.stop()
 
-df, ref = load_raw_data()
-features_pdl, daily = compute_features(df, ref)
+# Carga instantánea al inicio: solo ref (13KB) + features desde cache CSV
+ref = load_ref()
+features_pdl, daily = compute_features(ref)
 
 
 
@@ -583,7 +754,7 @@ if page == "🏠 Accueil":
             '<div class="metric-label">Clients RS — Residence Secondaire</div>'
             '</div>', unsafe_allow_html=True)
     with c4:
-        n_rows = f"{len(df)/1e6:.1f} M"
+        n_rows = "8.7 M"
         st.markdown(
             f'<div class="metric-card">'
             f'<div class="metric-value">{n_rows}</div>'
@@ -715,7 +886,7 @@ elif page == "🔍 Les donnees":
     with tab2:
         st.subheader("Courbe de consommation individuelle")
         st.caption("Selectionnez un client pour voir sa courbe sur l'annee entiere.")
-        all_pdls = sorted(df[COL_PDL].unique())
+        all_pdls = sorted(ref["pdl_id"].unique())
         pdl_sel  = st.selectbox("Client (identifiant PDL)", all_pdls)
         client_type = ref.loc[ref["pdl_id"] == pdl_sel, "label_rs_rp"].values
         if len(client_type):
@@ -750,14 +921,7 @@ elif page == "🔍 Les donnees":
             'et les vacances — signal tres discriminant pour les classifier.'
             '</div>', unsafe_allow_html=True)
 
-        intraday = (
-            df.merge(ref[["pdl_id","label_rs_rp"]], on="pdl_id", how="left")
-            .groupby(["label_rs_rp","hh_index"])["energy_kwh"]
-            .mean().reset_index()
-        )
-        intraday["Type"]  = intraday["label_rs_rp"].map({0: "RP", 1: "RS"})
-        intraday["Heure"] = intraday["hh_index"].apply(
-            lambda x: f"{x//2:02d}:{(x%2)*30:02d}")
+        intraday = load_intraday(ref)
 
         fig_id = go.Figure()
         for label, color in COLORS.items():
@@ -1326,127 +1490,155 @@ elif page == "📈 Que va-t-il consommer ?":
                 language="python"
             )
 
-    #  Tab 2 : Prédiction par client 
+    #  Tab 2 : Prédiction en temps réel (modèle Ridge)
     with tab_client:
-        st.subheader("Visualisation de la prédiction pour un client")
+        st.subheader("Prédiction en temps réel — Modèle Ridge résiduel")
+        st.caption(
+            "Sélectionne un client et une date de début de prédiction. "
+            "Le modèle utilise les **14 jours précédents** pour prédire les **2 jours suivants**."
+        )
 
-        if WINDOWS_FILE.exists():
-            windows_sample = pd.read_csv(WINDOWS_FILE)
+        artifact = load_ridge_model()
 
+        if artifact is None:
+            st.warning(
+                f"Modèle Ridge introuvable (`{MODEL_PATH}`). "
+                "Place le fichier `modele_final_ridge.joblib` dans le dossier `models/`."
+            )
+        else:
+            ridge_model_live  = artifact["ridge_model"]
+            baseline_model    = artifact["baseline_model"]
+            INPUT_LEN_LIVE    = artifact.get("input_len", 672)
+            HORIZON_LIVE      = artifact.get("horizon",   96)
 
-            # Filtres
+            # Jours fériés — años conocidos del dataset
+            fr_holidays_live = _make_fr_holidays([2023, 2024, 2025])
+
+            # ── Filtros de selección ──
             col_seg, col_pdl = st.columns([1, 3])
             with col_seg:
-                seg_filter = st.selectbox("Segment", ["Tous", "RP", "RS"])
+                seg_filter = st.selectbox("Segment", ["Tous", "RP", "RS"], key="pred_seg")
             with col_pdl:
-                pdl_list = sorted(windows_sample["pdl_id"].unique())
-                if seg_filter != "Tous":
-                    pdl_list = sorted(
-                        windows_sample.loc[windows_sample["segment"] == seg_filter, "pdl_id"].unique()
-                    )
-                pdl_sel = st.selectbox("Client (PDL)", pdl_list)
+                seg_map = ref.set_index("pdl_id")["label_rs_rp"].map({0: "RP", 1: "RS"})
+                if seg_filter == "Tous":
+                    pdl_list = sorted(ref["pdl_id"].unique())
+                else:
+                    pdl_list = sorted(seg_map[seg_map == seg_filter].index.tolist())
+                pdl_sel = st.selectbox("Client (PDL)", pdl_list, key="pred_pdl")
 
-            # Filtrage
-            sub = windows_sample[windows_sample["pdl_id"] == pdl_sel].copy()
-            if "forecast_start" in sub.columns:
-                sub["forecast_start"] = pd.to_datetime(sub["forecast_start"])
-                dates_avail = sub["forecast_start"].dt.strftime("%d/%m/%Y %Hh").tolist()
-                chosen_date = st.select_slider(
-                    "Fenêtre de prédiction",
-                    options=dates_avail,
-                    value=dates_avail[len(dates_avail) // 2] if dates_avail else dates_avail[0]
-                )
-                row = sub[sub["forecast_start"].dt.strftime("%d/%m/%Y %Hh") == chosen_date].iloc[0]
+            # ── Données du client — carga lazy del DataFrame pesado ──
+            with st.spinner("Cargando datos del cliente..."):
+                df = load_raw_data()
+            g_client = (
+                df[df[COL_PDL] == pdl_sel]
+                .sort_values(COL_DT)
+                .reset_index(drop=True)
+            )
+            segment_live = ref.loc[ref["pdl_id"] == pdl_sel, "label_rs_rp"].values
+            segment_str  = "RP" if (len(segment_live) and segment_live[0] == 0) else "RS"
+
+            n_pts = len(g_client)
+            min_pts = INPUT_LEN_LIVE + HORIZON_LIVE
+
+            if n_pts < min_pts:
+                st.warning(f"Historique insuffisant pour ce client ({n_pts} points, minimum {min_pts}).")
             else:
-                row = sub.iloc[len(sub) // 2]
+                # Fenêtres disponibles : toutes les positions valides avec stride 48
+                valid_starts = list(range(0, n_pts - min_pts + 1, 48))
+                anchor_times = [
+                    pd.Timestamp(g_client[COL_DT].iloc[s + INPUT_LEN_LIVE - 1])
+                    for s in valid_starts
+                ]
+                date_labels = [
+                    f"Prédiction du {(t + pd.Timedelta(minutes=30)).strftime('%d/%m/%Y')}"
+                    for t in anchor_times
+                ]
 
-            # Reconstruction des séries depuis les colonnes
-            HORIZON_PLOT = 96
-            hh_axis = [f"{h//2:02d}:{(h%2)*30:02d}" for h in range(HORIZON_PLOT)]
+                chosen_label = st.select_slider(
+                    "Fenêtre de prédiction",
+                    options=date_labels,
+                    value=date_labels[len(date_labels) // 2],
+                    key="pred_window"
+                )
+                chosen_idx   = date_labels.index(chosen_label)
+                start        = valid_starts[chosen_idx]
+                anchor_time  = anchor_times[chosen_idx]
 
-            y_cols       = [c for c in sub.columns if c.startswith("y_")]
-            recent_cols  = [c for c in sub.columns if c.startswith("b_recent_")]
-            weekly_cols  = [c for c in sub.columns if c.startswith("b_weekly_")]
-            ridge_cols   = [c for c in sub.columns if c.startswith("ridge_")]
-            lgbm_cols    = [c for c in sub.columns if c.startswith("lgbm_")]
-            cnn_cols     = [c for c in sub.columns if c.startswith("cnn_")]
+                # ── Inférence ──
+                values   = g_client[COL_PWR].to_numpy(dtype=np.float32) * 0.5 / 1000
+                past_seq = values[start : start + INPUT_LEN_LIVE]
+                y_true   = values[start + INPUT_LEN_LIVE : start + min_pts]
 
-            fig_client = go.Figure()
+                past_dates   = g_client[COL_DT].iloc[start : start + INPUT_LEN_LIVE]
+                future_dates = g_client[COL_DT].iloc[start + INPUT_LEN_LIVE : start + min_pts]
 
-            if y_cols:
-                y_vals = row[sorted(y_cols, key=lambda c: int(c.split("_")[-1]))].values.astype(float)
-                fig_client.add_trace(go.Scatter(
-                    x=hh_axis[:len(y_vals)], y=y_vals,
-                    mode="lines+markers", name="Réel",
-                    line=dict(color="#1a1a2e", width=2.5), marker=dict(size=3)
+                extra     = _build_extra_features(past_seq, anchor_time, segment_str, fr_holidays_live).reshape(1, -1)
+                x_tab_one = np.hstack([past_seq.reshape(1, -1), extra]).astype(np.float32)
+
+                b_recent = past_seq[-HORIZON_LIVE:].reshape(1, -1)
+                b_weekly = past_seq[INPUT_LEN_LIVE - 336 : INPUT_LEN_LIVE - 336 + HORIZON_LIVE].reshape(1, -1)
+                baseline = b_recent if baseline_model == "baseline_recent" else b_weekly
+
+                pred_res  = ridge_model_live.predict(x_tab_one).astype(np.float32)
+                pred_vals = np.clip(baseline + pred_res, 0, None)[0]
+
+                # ── Gráfico ──
+                past_ts   = pd.to_datetime(past_dates.values)
+                future_ts = pd.to_datetime(future_dates.values)
+
+                fig_live = go.Figure()
+                fig_live.add_trace(go.Scatter(
+                    x=past_ts, y=past_seq,
+                    mode="lines", name="Historique 14 jours",
+                    line=dict(color="#90CAF9", width=1.2),
                 ))
-            if recent_cols:
-                v = row[sorted(recent_cols, key=lambda c: int(c.split("_")[-1]))].values.astype(float)
-                fig_client.add_trace(go.Scatter(x=hh_axis[:len(v)], y=v, mode="lines",
-                    name="Baseline récente", line=dict(color="#9E9E9E", dash="dot", width=1.8)))
-            if weekly_cols:
-                v = row[sorted(weekly_cols, key=lambda c: int(c.split("_")[-1]))].values.astype(float)
-                fig_client.add_trace(go.Scatter(x=hh_axis[:len(v)], y=v, mode="lines",
-                    name="Baseline hebdo", line=dict(color="#FF9800", dash="dot", width=1.8)))
-            if ridge_cols:
-                v = row[sorted(ridge_cols, key=lambda c: int(c.split("_")[-1]))].values.astype(float)
-                fig_client.add_trace(go.Scatter(x=hh_axis[:len(v)], y=v, mode="lines",
-                    name="Ridge résiduel", line=dict(color="#2196F3", dash="dash", width=2)))
-            if lgbm_cols:
-                v = row[sorted(lgbm_cols, key=lambda c: int(c.split("_")[-1]))].values.astype(float)
-                fig_client.add_trace(go.Scatter(x=hh_axis[:len(v)], y=v, mode="lines",
-                    name="LightGBM résiduel", line=dict(color="#4CAF50", dash="dash", width=2)))
-            if cnn_cols:
-                v = row[sorted(cnn_cols, key=lambda c: int(c.split("_")[-1]))].values.astype(float)
-                fig_client.add_trace(go.Scatter(x=hh_axis[:len(v)], y=v, mode="lines",
-                    name="CNN résiduel", line=dict(color="#E91E63", dash="dash", width=2)))
+                fig_live.add_trace(go.Scatter(
+                    x=future_ts, y=y_true,
+                    mode="lines+markers", name="Réel",
+                    line=dict(color="#1a1a2e", width=2.2), marker=dict(size=3),
+                ))
+                fig_live.add_trace(go.Scatter(
+                    x=future_ts, y=pred_vals,
+                    mode="lines", name="Prédiction Ridge",
+                    line=dict(color="#2196F3", width=2.2, dash="dash"),
+                ))
+                fig_live.add_trace(go.Scatter(
+                    x=future_ts, y=baseline[0],
+                    mode="lines", name=f"Baseline ({baseline_model.replace('_', ' ')})",
+                    line=dict(color="#FF9800", width=1.5, dash="dot"),
+                ))
+                # Ligne verticale séparant historique et prédiction
+                forecast_start_ts = future_ts[0]
+                fig_live.add_vline(
+                    x=forecast_start_ts.value / 1e6,
+                    line_dash="dash", line_color="gray", opacity=0.6,
+                    annotation_text="Début prédiction",
+                    annotation_position="top left",
+                )
+                fig_live.update_layout(
+                    title=f"Client {pdl_sel} ({segment_str}) — 14 jours observés → 2 jours prédits",
+                    xaxis_title="Date",
+                    yaxis_title="kWh / 30 min",
+                    height=460,
+                    hovermode="x unified",
+                    legend=dict(orientation="h", y=1.08),
+                    margin=dict(l=0, r=0, t=50, b=0),
+                )
+                st.plotly_chart(fig_live, use_container_width=True)
 
-            seg_label = row.get("segment", "?")
-            fig_client.update_layout(
-                title=f"Client {pdl_sel} ({seg_label}) — Prédiction sur 2 jours",
-                xaxis_title="Heure de la journée",
-                yaxis_title="kWh / 30 min",
-                height=440,
-                hovermode="x unified",
-                legend=dict(orientation="h", y=1.08),
-                margin=dict(l=0, r=0, t=50, b=0),
-            )
-            st.plotly_chart(fig_client, use_container_width=True)
+                # ── Métriques ──
+                mae_ridge   = float(np.mean(np.abs(y_true - pred_vals)))
+                mae_base    = float(np.mean(np.abs(y_true - baseline[0])))
+                denom_wmape = np.sum(np.abs(y_true))
+                wmape_ridge = float(np.sum(np.abs(y_true - pred_vals)) / denom_wmape * 100) if denom_wmape > 1e-8 else float("nan")
+                wmape_base  = float(np.sum(np.abs(y_true - baseline[0])) / denom_wmape * 100) if denom_wmape > 1e-8 else float("nan")
+                gain        = (mae_base - mae_ridge) / mae_base * 100 if mae_base > 1e-8 else float("nan")
 
-            # Métriques locales
-            if y_cols and ridge_cols:
-                y_flat = row[sorted(y_cols,    key=lambda c: int(c.split("_")[-1]))].values.astype(float)
-                r_flat = row[sorted(ridge_cols, key=lambda c: int(c.split("_")[-1]))].values.astype(float)
-                mae_r  = float(np.mean(np.abs(y_flat - r_flat)))
-                rec_flat = row[sorted(recent_cols, key=lambda c: int(c.split("_")[-1]))].values.astype(float) if recent_cols else r_flat
-                mae_b    = float(np.mean(np.abs(y_flat - rec_flat)))
-                m1, m2, m3 = st.columns(3)
-                with m1: st.metric("MAE Ridge",         f"{mae_r:.4f} kWh")
-                with m2: st.metric("MAE Baseline récente", f"{mae_b:.4f} kWh")
-                with m3: st.metric("Gain vs baseline",  f"{((mae_b - mae_r)/mae_b*100):.1f}%",
-                                   delta_color="normal")
-
-        else:
-            st.info(
-                "Aucun fichier d'exemples de prédiction trouvé. "
-                f"Attendu : `{WINDOWS_FILE}`\n\n"
-                "Ajoutez à la fin du notebook pour générer ce fichier :"
-            )
-            st.code(
-                "# Exporter un échantillon de fenêtres avec prédictions\n"
-                "sample_idx = np.random.default_rng(42).choice(idx_test, size=min(500, len(idx_test)), replace=False)\n"
-                "sample_df  = windows.iloc[sample_idx][[\"pdl_id\", \"segment\", \"forecast_start\"]].copy()\n\n"
-                "for i, col_idx in enumerate(sample_idx):\n"
-                "    for h in range(HORIZON):\n"
-                "        sample_df.loc[sample_idx[i], f'y_{h}']        = float(Y[col_idx, h])\n"
-                "        sample_df.loc[sample_idx[i], f'b_recent_{h}'] = float(B_recent[col_idx, h])\n"
-                "        sample_df.loc[sample_idx[i], f'b_weekly_{h}'] = float(B_weekly[col_idx, h])\n"
-                "        pred_r = ridge_model.predict(X_tab[[col_idx]]).flatten()\n"
-                "        sample_df.loc[sample_idx[i], f'ridge_{h}']    = float(np.clip(B_base[col_idx, h] + pred_r[h], 0, None))\n\n"
-                "sample_df.to_csv(Results_DIR / 'prediction_windows_sample.csv', index=False)\n"
-                "print('Fichier sauvegardé.')",
-                language="python"
-            )
+                m1, m2, m3, m4 = st.columns(4)
+                with m1: st.metric("MAE Ridge",    f"{mae_ridge:.4f} kWh")
+                with m2: st.metric("WMAPE Ridge",  f"{wmape_ridge:.1f}%")
+                with m3: st.metric("MAE Baseline", f"{mae_base:.4f} kWh")
+                with m4: st.metric("Gain vs baseline", f"{gain:.1f}%", delta_color="normal")
 
     #  Tab 3 : Figures notebook 
     with tab_figs:
@@ -1706,11 +1898,11 @@ elif page == "🎨 Generer de nouveaux profils":
             mais elles doivent être interprétées avec prudence.
 
             - Le CVAE apprend à partir des données disponibles : il peut reproduire leurs biais.
-            - Une courbe visuellement réaliste n’est pas forcément statistiquement parfaite.
+            - Une courbe visuellement réaliste n'est pas forcément statistiquement parfaite.
             - Il faut comparer les distributions réel/généré avec des tests statistiques.
             - Les profils générés ne remplacent pas des mesures terrain réelles.
 
-            **Conclusion :** la génération est intéressante pour la simulation et l’augmentation
-            de données, mais elle doit rester accompagnée d’une validation.
+            **Conclusion :** la génération est intéressante pour la simulation et l'augmentation
+            de données, mais elle doit rester accompagnée d'une validation.
             """
         )
